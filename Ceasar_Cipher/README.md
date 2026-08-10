@@ -18,4 +18,4 @@ It encrypts a message by shifting each alphabetic character by a fixed number of
 
 For example, with a key of **3**:
 
-<img src="./demo.gif" width="500" alt="App Demo">
+<img src="./demo.gif" width="700" height="600" alt="App Demo">
