@@ -18,12 +18,4 @@ It encrypts a message by shifting each alphabetic character by a fixed number of
 
 For example, with a key of **3**:
 
-```text
-A → D
-B → E
-C → F
-...
-X → A
-Y → B
-Z → C
 <img src="./demo.gif" width="500" alt="App Demo">
