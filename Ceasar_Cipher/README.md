@@ -26,3 +26,4 @@ C → F
 X → A
 Y → B
 Z → C
+<img src="./demo.gif" width="500" alt="App Demo">
