@@ -270,18 +270,8 @@ As traffic is generated, the dashboard should begin updating with packet informa
 
 A normal session could display traffic similar to:
 
-```text
-Time      Source        Destination       Protocol    Service
-----------------------------------------------------------------
-11:42:01  192.168.1.8   192.168.1.1       UDP         DNS
-11:42:02  192.168.1.8   xxx.xxx.xxx.xxx   TCP         HTTPS
-11:42:02  192.168.1.1   192.168.1.8       UDP         DNS
-11:42:03  192.168.1.8   xxx.xxx.xxx.xxx   TCP         HTTPS
-```
+<img src="./demo.gif" width="500" alt="App Demo">
 
-The exact results will vary depending on the machine, network, applications, and traffic being generated.
-
----
 
 ## 🚨 Security Alert Example
 
