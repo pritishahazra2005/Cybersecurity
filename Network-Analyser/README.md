@@ -1,28 +1,20 @@
-# 🌐 Network Traffic Analyzer
+# 🔐 Network Traffic Analyzer
 
-A lightweight **real-time network traffic analyzer and mini-NIDS** built with Python, **Scapy**, and **Rich**.
+A Python-based network traffic monitoring tool that captures and analyzes live network packets and presents the results through an interactive terminal dashboard.
 
-The tool captures live network packets, analyzes basic traffic characteristics, displays network activity through an interactive terminal dashboard, and highlights potentially suspicious traffic patterns.
-
-> ⚠️ **Educational / Defensive Use:** Only capture traffic on networks and systems you own or have explicit permission to monitor.
+The project is designed as a practical cybersecurity learning project for understanding **network traffic, packet analysis, protocols, services, traffic statistics, and basic suspicious-activity detection**.
 
 ---
 
 ## 📌 Overview
 
-This project provides a simple way to observe network activity directly from the terminal.
+Network traffic can provide valuable information about what is happening inside a system or network.
 
-It combines:
+This project provides a lightweight way to observe that activity in real time.
 
-* **Packet capture** using Scapy
-* **Live terminal visualization** using Rich
-* **Protocol and service identification**
-* **Network host statistics**
-* **Traffic telemetry**
-* **Basic NIDS-style alerts**
-* **CSV and PCAP session export**
+The analyzer captures packets from a network interface, extracts useful information from them, maintains traffic statistics, and presents the results through a terminal-based interface.
 
-The project is intended as a practical introduction to **network monitoring, packet analysis, and defensive security concepts**.
+It also includes basic security-focused detection logic to highlight traffic patterns that may require further investigation.
 
 ---
 
@@ -30,16 +22,17 @@ The project is intended as a practical introduction to **network monitoring, pac
 
 ### 📡 Live Packet Capture
 
-Captures network packets in real time and displays useful information including:
+The analyzer captures network packets in real time and extracts information such as:
 
-* Source IP
-* Destination IP
+* Source IP address
+* Destination IP address
 * Protocol
-* Service
+* Source and destination ports
+* Common services
 * Packet size
 * Timestamp
 
-The analyzer supports common traffic types such as:
+Supported traffic includes common protocols such as:
 
 * TCP
 * UDP
@@ -47,112 +40,103 @@ The analyzer supports common traffic types such as:
 
 ---
 
-### 📊 Real-Time Network Dashboard
+### 📊 Traffic Statistics
 
-The Rich-powered terminal interface provides a live view of network activity.
+The application maintains useful network telemetry during a capture session, including:
 
-The dashboard includes:
+* Total packets captured
+* Total traffic volume
+* Packets per second
+* Average packet size
+* Unique hosts observed
+* Protocol distribution
+* Top network hosts
+
+This provides a quick overview of network activity without requiring a graphical packet-analysis application.
+
+---
+
+### 🚨 Basic Security Monitoring
+
+The analyzer contains lightweight detection heuristics that can highlight potentially interesting traffic patterns.
+
+Examples include:
+
+* TCP SYN probing
+* Cleartext HTTP traffic
+* FTP traffic
+* Telnet traffic
+* Unusual destination ports
+
+Detected events are displayed in the dashboard as security alerts.
+
+> **Important:** These alerts are indicators for investigation and are not definitive proof of malicious activity.
+
+---
+
+### 🖥️ Interactive Terminal Dashboard
+
+The project uses **Rich** to provide a continuously updating terminal interface.
+
+The dashboard presents:
 
 ```text
-Live Packet Stream
-        │
-        ├── Source / Destination
-        ├── Protocol
-        ├── Service
-        └── Packet Size
-
-Top Network Hosts
-        │
-        ├── Packet count
-        └── Traffic volume
-
-Telemetry
-        │
-        ├── Packet rate
-        ├── Total packets
-        ├── Total bytes
-        └── Network activity
-
-Security Watchlist
-        │
-        └── Suspicious traffic alerts
+┌─────────────────────────────────────────────┐
+│             LIVE PACKET MONITOR             │
+├─────────────────────────────────────────────┤
+│ Source → Destination → Protocol → Service   │
+│                                             │
+│ 192.168.1.8 → 192.168.1.1 → UDP → DNS      │
+│ 192.168.1.8 → xxx.xxx.xxx → TCP → HTTPS    │
+├──────────────────────┬──────────────────────┤
+│ Network Hosts        │ Telemetry            │
+│                      │                      │
+│ Packet Counts        │ Packet Rate          │
+│ Traffic Volume       │ Protocol Statistics  │
+│                      │ Security Alerts      │
+└──────────────────────┴──────────────────────┘
 ```
 
 ---
 
-## 🚨 Mini-NIDS Detection
+### 💾 CSV & PCAP Export
 
-The analyzer includes lightweight heuristic rules for identifying potentially suspicious traffic.
+Captured sessions can be saved for later analysis.
 
-It can highlight patterns such as:
+#### CSV
 
-### SYN Probes
+The CSV export contains structured information about observed traffic, making it useful for:
 
-TCP SYN traffic can be surfaced as a possible probing activity.
+* Reviewing traffic history
+* Spreadsheet analysis
+* Python-based data processing
+* Creating future visualizations
 
-### Cleartext Protocols
+#### PCAP
 
-The analyzer can identify traffic associated with services such as:
+The analyzer can also save captured packets as a PCAP file.
 
-* HTTP
-* FTP
-* Telnet
-
-These protocols may expose information without encryption.
-
-### Unusual Ports
-
-Traffic involving uncommon or high destination ports can be surfaced for investigation.
-
-> These detections are **heuristics**, not definitive indicators of compromise. A flagged packet should be investigated rather than automatically treated as malicious.
+The resulting file can be opened in **Wireshark** for deeper packet-level investigation.
 
 ---
 
-## 💾 Export Captured Traffic
+## 🛠️ Technologies Used
 
-At the end of a capture session, traffic can be exported into two useful formats.
-
-### CSV
-
-Provides structured traffic information that can be used for analysis in spreadsheet or scripting tools.
-
-Example fields include:
-
-```text
-Date
-Time
-Source IP
-Destination IP
-Protocol
-Service
-Size
-```
-
-### PCAP
-
-The captured packets can also be saved as a `.pcap` file.
-
-PCAP files can be opened in tools such as **Wireshark** for deeper packet-level investigation.
-
----
-
-## 🛠️ Technologies
-
-| Technology | Purpose                            |
-| ---------- | ---------------------------------- |
-| Python     | Core implementation                |
-| Scapy      | Packet capture and packet analysis |
-| Rich       | Live terminal dashboard            |
-| CSV        | Structured traffic export          |
-| PCAP       | Raw packet capture export          |
-| Wireshark  | Optional packet investigation      |
+| Technology | Purpose                       |
+| ---------- | ----------------------------- |
+| Python     | Core application              |
+| Scapy      | Packet capture and analysis   |
+| Rich       | Terminal dashboard            |
+| CSV        | Structured traffic export     |
+| PCAP       | Packet capture storage        |
+| Wireshark  | Optional packet investigation |
 
 ---
 
 ## 📂 Project Structure
 
 ```text
-Network_Traffic_Analyzer/
+Network-Traffic-Analyzer/
 │
 ├── analyzer.py
 ├── requirements.txt
@@ -164,15 +148,23 @@ Network_Traffic_Analyzer/
 
 ### `analyzer.py`
 
-Main application containing packet capture, traffic analysis, dashboard rendering, detection logic, and export functionality.
+The primary application containing packet capture, traffic processing, statistics, security heuristics, dashboard rendering, and session export.
 
 ### `requirements.txt`
 
-Contains the Python packages required to run the analyzer.
+Contains the Python dependencies required by the application.
 
 ### `demo.gif`
 
-Demonstrates the analyzer running in a live terminal environment.
+A demonstration of the analyzer running and processing network traffic.
+
+### `LICENSE`
+
+Project licensing information.
+
+### `.gitignore`
+
+Specifies files and directories that should not be committed to the repository.
 
 ---
 
@@ -182,7 +174,7 @@ Demonstrates the analyzer running in a live terminal environment.
 
 ```bash
 git clone <your-repository-url>
-cd Network_Traffic_Analyzer
+cd Network-Traffic-Analyzer
 ```
 
 ### 2. Create a virtual environment
@@ -191,6 +183,11 @@ cd Network_Traffic_Analyzer
 
 ```powershell
 python -m venv venv
+```
+
+Activate it:
+
+```powershell
 .\venv\Scripts\Activate.ps1
 ```
 
@@ -211,186 +208,174 @@ pip install -r requirements.txt
 
 ## 🪟 Windows Setup
 
-On Windows, Scapy requires a packet-capture driver such as **Npcap**.
+If you are running the analyzer on Windows, **Npcap** is required for packet capture.
 
-Install Npcap before running the analyzer.
+After installing Npcap, open a new PowerShell window and run the analyzer.
 
-After installation, open a new terminal and run:
-
-```powershell
-python analyzer.py
-```
-
-Depending on your environment, packet capture may require elevated privileges.
+Depending on your system configuration, packet capture may require administrator privileges.
 
 ---
 
-## ▶️ Running the Analyzer
+## ▶️ Usage
 
-Start the program with:
+Start the analyzer with:
 
 ```bash
 python analyzer.py
 ```
 
-The application will check the environment and then begin the monitoring workflow.
+The application may ask for an IP address to monitor:
 
-You can provide an IP address when prompted if you want to focus the analysis on a particular host.
+```text
+Monitor specific IP (press Enter for all traffic):
+```
 
-For general testing, leave the field empty and press **Enter** to observe available traffic.
+### Monitor all available traffic
+
+Press **Enter** without entering an IP address.
+
+### Monitor a specific host
+
+Enter an IP address that you are authorized to monitor:
+
+```text
+192.168.1.8
+```
+
+The application will then begin displaying captured traffic through the terminal dashboard.
 
 ---
 
 ## 🧪 Testing
 
-Once the analyzer is running, generate normal network traffic on your own machine.
+To test the analyzer, run it on a system or network you control.
 
-For example:
+After starting the application, generate normal network traffic by:
+
+* Opening websites
+* Refreshing web pages
+* Running DNS queries
+* Using normal network applications
+* Running a simple connectivity test such as:
 
 ```bash
 ping google.com
 ```
 
-You can also:
+As traffic is generated, the dashboard should begin updating with packet information and network statistics.
 
-* Browse websites
-* Refresh web pages
-* Perform DNS lookups
-* Use normal network applications
+---
 
-The dashboard should begin displaying packets and updating its telemetry.
+## 📈 Example Traffic
 
-Example:
+A normal session could display traffic similar to:
 
 ```text
-Source          Destination       Protocol     Service
-192.168.1.8     192.168.1.1       UDP          DNS
-192.168.1.8     xxx.xxx.xxx.xxx   TCP          HTTPS
-192.168.1.1     192.168.1.8       UDP          DNS
+Time      Source        Destination       Protocol    Service
+----------------------------------------------------------------
+11:42:01  192.168.1.8   192.168.1.1       UDP         DNS
+11:42:02  192.168.1.8   xxx.xxx.xxx.xxx   TCP         HTTPS
+11:42:02  192.168.1.1   192.168.1.8       UDP         DNS
+11:42:03  192.168.1.8   xxx.xxx.xxx.xxx   TCP         HTTPS
 ```
 
----
-
-## 🔎 Understanding the Dashboard
-
-### Live Packet Stream
-
-Shows recently captured packets and their basic characteristics.
-
-### Top Network Hosts
-
-Displays hosts generating significant amounts of traffic.
-
-### Telemetry
-
-Provides an overview of the current capture session, including packet activity and traffic statistics.
-
-### Security Watchlist
-
-Displays traffic patterns that match the analyzer's built-in heuristic rules.
+The exact results will vary depending on the machine, network, applications, and traffic being generated.
 
 ---
 
-## 📈 Example Output
+## 🚨 Security Alert Example
 
-A typical session may look similar to:
+When traffic matches one of the analyzer's detection heuristics, the dashboard can display an alert such as:
 
 ```text
-┌──────────────────── Live Packet Stream ────────────────────┐
-│ Time      Source        Destination       Protocol Service │
-│                                                            │
-│ 11:42:01  192.168.1.8   192.168.1.1       UDP      DNS     │
-│ 11:42:02  192.168.1.8   xxx.xxx.xxx.xxx   TCP      HTTPS   │
-│ 11:42:03  192.168.1.1   192.168.1.8       UDP      DNS     │
-└────────────────────────────────────────────────────────────┘
-
-Top Network Hosts
-
-192.168.1.1       421 packets
-192.168.1.8       287 packets
-
-Telemetry
-
-Packets: 708
-Traffic: 486 KB
-Packet Rate: 32 packets/sec
-
-Security Watchlist
+Security Events
 
 [LOW] Unencrypted HTTP traffic detected
+[MEDIUM] Cleartext Telnet traffic detected
+[HIGH] Possible port scan detected
 ```
 
-*Output varies depending on the network environment and traffic being captured.*
+These alerts should be treated as **investigation leads**, not automatic conclusions.
 
 ---
 
-## 🔬 PCAP Analysis with Wireshark
+## 🔬 PCAP Investigation
 
-The exported PCAP file can be opened in Wireshark for additional investigation.
+One of the useful parts of the project is the ability to move from automated monitoring to manual packet investigation.
 
-A typical workflow is:
+The workflow is:
 
 ```text
-Network Traffic
-      ↓
-Network Traffic Analyzer
-      ↓
-Capture packets
-      ↓
-Export PCAP
-      ↓
-Wireshark
-      ↓
-Detailed packet investigation
+Live Network Traffic
+        │
+        ▼
+   Packet Capture
+        │
+        ▼
+ Network Traffic
+   Analyzer
+        │
+        ├───────────────┐
+        ▼               ▼
+     CSV Export      PCAP Export
+                        │
+                        ▼
+                    Wireshark
+                        │
+                        ▼
+               Detailed Analysis
 ```
 
-This makes the project useful as a starting point for learning how automated monitoring and manual packet analysis can complement each other.
+This makes the project useful for learning how network-monitoring tools and packet-analysis tools can work together.
 
 ---
 
 ## 🧠 Concepts Demonstrated
 
-This project provides practical exposure to:
+This project provides hands-on experience with:
 
 * Network packet capture
-* TCP/IP traffic
-* TCP and UDP ports
-* ICMP traffic
-* DNS and HTTP/HTTPS traffic
-* Network host identification
-* Packet statistics
-* Traffic monitoring
-* Basic intrusion-detection heuristics
-* PCAP analysis
+* IP addressing
+* TCP/IP networking
+* TCP and UDP
+* ICMP
+* Network ports
+* Common network services
+* DNS traffic
+* HTTP/HTTPS traffic
+* Network traffic statistics
+* Packet analysis
+* Basic intrusion-detection concepts
+* PCAP files
 * Python networking
-* Terminal-based security tooling
+* Terminal-based security tools
 
 ---
 
-## 🚧 Possible Improvements
+## 🚧 Future Improvements
 
-Some ideas for extending the project include:
+Possible improvements include:
 
-* More advanced port-scan detection
-* Configurable detection thresholds
-* Additional protocol support
-* Improved alert correlation
-* JSON export
-* Persistent logging
-* Network-interface selection
-* Configurable filtering
-* More detailed protocol statistics
-* Integration with external security monitoring systems
+* [ ] More advanced port-scan detection
+* [ ] Configurable detection thresholds
+* [ ] Network-interface selection
+* [ ] Improved filtering options
+* [ ] JSON export
+* [ ] Persistent event logging
+* [ ] More protocol-specific analysis
+* [ ] Improved alert correlation
+* [ ] Historical traffic visualization
+* [ ] Modular detection rules
 
 ---
 
 ## ⚠️ Disclaimer
 
-This project is intended for **educational and authorized defensive security testing**.
+This project is intended for **educational, research, and authorized defensive-security purposes**.
 
-Do not use it to capture, inspect, or analyze network traffic that you do not have permission to monitor.
+Only capture or analyze traffic on networks and systems where you have permission to do so.
 
-The included detection rules are basic heuristics and may produce **false positives or false negatives**. They should not be considered a replacement for a production-grade IDS/IPS.
+The detection mechanisms included in this project are lightweight heuristics and may produce false positives or fail to detect sophisticated attacks. They should not be considered a replacement for a production-grade IDS/IPS.
 
 ---
 
@@ -399,12 +384,8 @@ The included detection rules are basic heuristics and may produce **false positi
 **Pritisha Hazra**
 
 Computer Science & Engineering
-Cybersecurity | Cloud Security | Python
+Cybersecurity • Cloud Security • Python
 
 ---
 
-## 📜 License
 
-This project is released under the **MIT License**.
-
-See [`LICENSE`](LICENSE) for details.
