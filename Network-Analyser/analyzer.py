@@ -1,219 +1,480 @@
-import csv  # for writing packet logs to a structured CSV file
-from collections import Counter  # for tracking packet frequencies, byte totals, and protocol stats
-from datetime import datetime  # to generate timestamps for packet capture and export filenames
-import os  # for system privilege checks (root/sudo validation)
-import re  # for sanitizing user-entered CSV file names
-import select  # provides access to operating system I/O multiplexing
-import sys  # system platform detection and terminal control
-import threading  # background network sniffing and rate calculation
-import time  # system delays, rate intervals, and polling rates
+"""
+SentinelNet
+-----------
+Lightweight Network Traffic Monitor & Mini-NIDS
+
+Features:
+- Live packet capture using Scapy
+- Protocol and host statistics
+- Service identification
+- Basic suspicious-traffic detection
+- Packet-rate monitoring
+- CSV and PCAP session export
+- Interactive Rich terminal dashboard
+
+Use only on networks and systems you are authorized to monitor.
+"""
+
+import csv
+import os
+import re
+import select
+import sys
+import threading
+import time
+from collections import Counter, defaultdict
+from datetime import datetime
 
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from scapy.all import ICMP, IP, TCP, UDP, sniff, wrpcap  # packet sniffing & PCAP export
+from scapy.all import ICMP, IP, TCP, UDP, sniff, wrpcap
 
-# Terminal I/O configuration for Unix platforms
-import os
 
-# Add this inside main() before launching anything else:
-if sys.platform != "win32" and os.geteuid() != 0:
-    print("[!] Privilege Check Failed: Raw packet sniffing requires root permissions.")
-    print("    Please run with sudo: 'sudo python3 analyzer.py'\n")
-    sys.exit(1)
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-# GLOBAL STATE & BUFFERS
-packet_buffer = []          # Circular queue formatted for terminal UI
-all_captured_packets = []   # Structured dictionary list for CSV export
-all_raw_packets = []        # Scapy raw packet objects list for PCAP export
-total_packets = 0
-total_bytes = 0
 
-# TELEMETRY & HOST ANALYTICS COUNTERS
-ip_packets = Counter()
-ip_bytes = Counter()
-protocol_counts = Counter()
-unique_hosts = set()
-
-# RATE MEASUREMENT & STATUS
-packet_count_last_sec = 0
-current_packet_rate = 0
-status_message = "Listening for live packets..."
-
-# THREAT DETECTION & CONCURRENCY
-flagged_traffic = []
-lock = threading.Lock()
-TARGET_IP = ""
+MAX_VISIBLE_PACKETS = 100
+MAX_ALERTS = 6
+SCAN_WINDOW_SECONDS = 10
+SCAN_PORT_THRESHOLD = 8
 
 COMMON_SERVICES = {
-    80: "HTTP (Web)",
-    443: "HTTPS (Web)",
-    53: "DNS (Domain Lookup)",
-    22: "SSH (Remote Access)",
-    21: "FTP (File Transfer)",
+    20: "FTP-Data",
+    21: "FTP",
+    22: "SSH",
     23: "Telnet",
-    123: "NTP (Time Sync)",
-    5353: "mDNS (Local Discovery)",
-    1900: "SSDP (UPnP)",
+    25: "SMTP",
+    53: "DNS",
     67: "DHCP",
     68: "DHCP",
+    80: "HTTP",
+    110: "POP3",
+    123: "NTP",
+    143: "IMAP",
+    443: "HTTPS",
+    445: "SMB",
+    587: "SMTP",
+    993: "IMAPS",
+    995: "POP3S",
+    1900: "SSDP",
+    3306: "MySQL",
+    5353: "mDNS",
+    8080: "HTTP-Alt",
 }
 
 
-# HELPER FUNCTIONS
+# ============================================================
+# SHARED STATE
+# ============================================================
+
+packet_buffer = []
+traffic_records = []
+raw_packets = []
+
+ip_packet_counts = Counter()
+ip_byte_counts = Counter()
+protocol_counts = Counter()
+unique_hosts = set()
+
+security_alerts = []
+
+# Track destination ports contacted by each source.
+scan_tracker = defaultdict(dict)
+
+total_packets = 0
+total_bytes = 0
+packets_last_second = 0
+packets_per_second = 0
+
+target_ip = ""
+capture_running = True
+
+lock = threading.Lock()
+
+
+# ============================================================
+# PRIVILEGE CHECK
+# ============================================================
+
 def check_privileges():
-    """Ensures the script is executing with root privileges required for raw packet sniffing."""
+    """
+    Check whether the program has enough privileges for packet capture.
+
+    Linux/macOS generally require root privileges.
+    Windows usually relies on Npcap being installed correctly.
+    """
+
     if sys.platform != "win32":
         if os.geteuid() != 0:
-            print("[!] Error: Raw packet sniffing requires administrative/root privileges.")
-            print("    Please run this script using sudo: 'sudo python3 analyzer.py'")
+            print("[!] SentinelNet requires elevated privileges.")
+            print("    Try: sudo python3 analyzer.py")
             sys.exit(1)
 
 
-def sanitize_filename(name):
-    """Sanitizes user input to construct a clean, valid file base name."""
-    name = name.strip()
-    if not name:
-        return f"traffic_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+# ============================================================
+# UTILITY FUNCTIONS
+# ============================================================
 
-    # Strip illegal characters for Windows/Unix file systems
-    name = re.sub(r'[\\/*?:"<>|]', "_", name)
-    
-    # Strip explicit extensions if user entered them (we append .csv and .pcap automatically)
-    if name.lower().endswith(".csv") or name.lower().endswith(".pcap"):
-        name = name.rsplit(".", 1)[0]
+def sanitize_filename(filename):
+    """Create a safe filename from user input."""
 
-    return name
+    filename = filename.strip()
+
+    if not filename:
+        return f"sentinelnet_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    filename = re.sub(r'[\\/*?:"<>|]', "_", filename)
+
+    for extension in (".csv", ".pcap", ".pcapng"):
+        if filename.lower().endswith(extension):
+            filename = filename[: -len(extension)]
+
+    return filename
 
 
-def resolve_service(sport, dport):
-    """Translates source/destination port numbers into standard application service names."""
-    if dport in COMMON_SERVICES:
-        return COMMON_SERVICES[dport]
-    if sport in COMMON_SERVICES:
-        return COMMON_SERVICES[sport]
-    return f"Port {dport}" if dport else "Unknown"
+def format_bytes(value):
+    """Convert bytes into a readable value."""
 
+    if value < 1024:
+        return f"{value} B"
+
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f} KB"
+
+    if value < 1024 * 1024 * 1024:
+        return f"{value / (1024 * 1024):.2f} MB"
+
+    return f"{value / (1024 * 1024 * 1024):.2f} GB"
+
+
+def resolve_service(source_port, destination_port):
+    """Identify a common network service from TCP/UDP ports."""
+
+    if destination_port in COMMON_SERVICES:
+        return COMMON_SERVICES[destination_port]
+
+    if source_port in COMMON_SERVICES:
+        return COMMON_SERVICES[source_port]
+
+    if destination_port:
+        return f"Port {destination_port}"
+
+    return "Unknown"
+
+
+def add_alert(message, severity="LOW"):
+    """Add a security alert while avoiding duplicate messages."""
+
+    global security_alerts
+
+    alert = {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "severity": severity,
+        "message": message,
+    }
+
+    with lock:
+        duplicate = any(
+            item["severity"] == severity
+            and item["message"] == message
+            for item in security_alerts
+        )
+
+        if not duplicate:
+            security_alerts.append(alert)
+
+        if len(security_alerts) > MAX_ALERTS:
+            security_alerts.pop(0)
+
+
+# ============================================================
+# THREAT DETECTION
+# ============================================================
+
+def detect_threats(packet, src_ip, dst_ip, destination_port, timestamp):
+    """
+    Apply lightweight defensive heuristics to captured packets.
+
+    These are indicators, not proof of malicious activity.
+    """
+
+    # --------------------------------------------------------
+    # 1. Cleartext services
+    # --------------------------------------------------------
+
+    if destination_port == 21:
+        add_alert(
+            f"Cleartext FTP traffic: {src_ip} -> {dst_ip}",
+            "MEDIUM",
+        )
+
+    elif destination_port == 23:
+        add_alert(
+            f"Cleartext Telnet traffic: {src_ip} -> {dst_ip}",
+            "MEDIUM",
+        )
+
+    elif destination_port == 80:
+        add_alert(
+            f"Unencrypted HTTP traffic: {src_ip} -> {dst_ip}",
+            "LOW",
+        )
+
+    # --------------------------------------------------------
+    # 2. Suspicious high destination ports
+    # --------------------------------------------------------
+
+    if (
+        destination_port
+        and destination_port > 1024
+        and destination_port not in COMMON_SERVICES
+    ):
+        add_alert(
+            f"Unusual destination port {destination_port}: "
+            f"{src_ip} -> {dst_ip}",
+            "LOW",
+        )
+
+    # --------------------------------------------------------
+    # 3. TCP SYN monitoring
+    # --------------------------------------------------------
+
+    if packet.haslayer(TCP):
+
+        flags = packet[TCP].flags
+
+        # SYN without ACK = connection initiation
+        if flags == "S":
+
+            now = time.time()
+
+            with lock:
+                source_ports = scan_tracker[src_ip]
+
+                # Remove old observations
+                expired = [
+                    port
+                    for port, seen_at in source_ports.items()
+                    if now - seen_at > SCAN_WINDOW_SECONDS
+                ]
+
+                for port in expired:
+                    del source_ports[port]
+
+                if destination_port:
+                    source_ports[destination_port] = now
+
+                unique_ports = len(source_ports)
+
+            if unique_ports >= SCAN_PORT_THRESHOLD:
+                add_alert(
+                    f"Possible port scan from {src_ip} "
+                    f"({unique_ports} ports in {SCAN_WINDOW_SECONDS}s)",
+                    "HIGH",
+                )
+
+
+# ============================================================
+# PACKET PROCESSING
+# ============================================================
 
 def process_packet(packet):
-    """Callback function triggered by Scapy for every sniffed network packet."""
-    global total_packets, total_bytes, packet_count_last_sec
+    """Process each packet received from Scapy."""
+
+    global total_packets
+    global total_bytes
+    global packets_last_second
 
     if not packet.haslayer(IP):
         return
 
     src_ip = packet[IP].src
     dst_ip = packet[IP].dst
-    pkt_len = len(packet)
+    packet_size = len(packet)
 
-    if TARGET_IP and (TARGET_IP not in (src_ip, dst_ip)):
+    # Optional source/destination filter
+    if target_ip and target_ip not in (src_ip, dst_ip):
         return
 
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    timestamp = datetime.now().strftime("%H:%M:%S")
+    now = datetime.now()
+
+    date_string = now.strftime("%Y-%m-%d")
+    timestamp = now.strftime("%H:%M:%S")
 
     protocol = "Other"
     service = "-"
-    dport = None
+    source_port = None
+    destination_port = None
+
+    # --------------------------------------------------------
+    # TCP
+    # --------------------------------------------------------
 
     if packet.haslayer(TCP):
+
         protocol = "TCP"
-        dport = packet[TCP].dport
-        service = resolve_service(packet[TCP].sport, dport)
+
+        source_port = packet[TCP].sport
+        destination_port = packet[TCP].dport
+
+        service = resolve_service(
+            source_port,
+            destination_port,
+        )
+
+    # --------------------------------------------------------
+    # UDP
+    # --------------------------------------------------------
+
     elif packet.haslayer(UDP):
+
         protocol = "UDP"
-        dport = packet[UDP].dport
-        service = resolve_service(packet[UDP].sport, dport)
+
+        source_port = packet[UDP].sport
+        destination_port = packet[UDP].dport
+
+        service = resolve_service(
+            source_port,
+            destination_port,
+        )
+
+    # --------------------------------------------------------
+    # ICMP
+    # --------------------------------------------------------
+
     elif packet.haslayer(ICMP):
+
         protocol = "ICMP"
         service = "Ping / Control"
 
-    size_str = f"{pkt_len} B" if pkt_len < 1024 else f"{pkt_len / 1024:.1f} KB"
+    # --------------------------------------------------------
+    # Update telemetry
+    # --------------------------------------------------------
 
     with lock:
-        total_packets += 1
-        total_bytes += pkt_len
-        packet_count_last_sec += 1
 
-        ip_packets[src_ip] += 1
-        ip_bytes[src_ip] += pkt_len
+        total_packets += 1
+        total_bytes += packet_size
+        packets_last_second += 1
+
+        ip_packet_counts[src_ip] += 1
+        ip_byte_counts[src_ip] += packet_size
+
         protocol_counts[protocol] += 1
+
         unique_hosts.add(src_ip)
         unique_hosts.add(dst_ip)
 
-        # MINI-NIDS DETECTION LOGIC
-        alert = None
-
-        # Rule 1: Flag TCP SYN Scan / Port Reconnaissance Probe
-        if packet.haslayer(TCP) and packet[TCP].flags == "S":
-            alert = f"[{timestamp}] SYN Probe: {src_ip} -> {dst_ip}:{dport}"
-
-        # Rule 2: Flag Unencrypted Cleartext Transmissions
-        elif dport in [80, 21, 23]:
-            proto_name = "HTTP" if dport == 80 else ("FTP" if dport == 21 else "Telnet")
-            alert = f"[{timestamp}] Cleartext {proto_name}: {src_ip} -> {dst_ip}"
-
-        # Rule 3: Flag Non-Standard Dynamic High Ports (>1024)
-        elif dport and dport not in COMMON_SERVICES and dport > 1024:
-            alert = f"[{timestamp}] High Port: {src_ip} -> {dst_ip}:{dport}"
-
-        if alert and alert not in flagged_traffic:
-            flagged_traffic.append(alert)
-            if len(flagged_traffic) > 5:
-                flagged_traffic.pop(0)
-
-        # Append formatted string tuple for UI table display
+        # Dashboard packet history
         packet_buffer.append(
-            (date_str, timestamp, src_ip, dst_ip, protocol, service, size_str)
+            (
+                date_string,
+                timestamp,
+                src_ip,
+                dst_ip,
+                protocol,
+                service,
+                format_bytes(packet_size),
+            )
         )
-        if len(packet_buffer) > 100:
+
+        if len(packet_buffer) > MAX_VISIBLE_PACKETS:
             packet_buffer.pop(0)
 
-        # Append structured dictionary for CSV export
-        packet_log = {
-            "Date": date_str,
-            "Time": timestamp,
-            "Source IP": src_ip,
-            "Destination IP": dst_ip,
-            "Protocol": protocol,
-            "Service": service,
-            "Size (Bytes)": pkt_len,
-        }
-        all_captured_packets.append(packet_log)
+        # Structured record for CSV export
+        traffic_records.append(
+            {
+                "Date": date_string,
+                "Time": timestamp,
+                "Source IP": src_ip,
+                "Destination IP": dst_ip,
+                "Protocol": protocol,
+                "Service": service,
+                "Size (Bytes)": packet_size,
+            }
+        )
 
-        # Retain raw Scapy packet for Wireshark PCAP export
-        all_raw_packets.append(packet)
+        # Keep raw Scapy packet for PCAP export
+        raw_packets.append(packet)
+
+    # Run detection outside the main statistics lock.
+    detect_threats(
+        packet,
+        src_ip,
+        dst_ip,
+        destination_port,
+        timestamp,
+    )
 
 
-def calculate_rates():
-    """Background worker thread function that calculates packet throughput every second."""
-    global packet_count_last_sec, current_packet_rate
-    while True:
+# ============================================================
+# PACKET RATE MONITOR
+# ============================================================
+
+def calculate_packet_rate():
+    """Calculate packets-per-second once every second."""
+
+    global packets_last_second
+    global packets_per_second
+
+    while capture_running:
+
         time.sleep(1)
-        with lock:
-            current_packet_rate = packet_count_last_sec
-            packet_count_last_sec = 0
 
+        with lock:
+            packets_per_second = packets_last_second
+            packets_last_second = 0
+
+
+# ============================================================
+# SNIFFER
+# ============================================================
 
 def start_sniffer():
-    """Starts packet capture in non-storing mode to save memory."""
-    sniff(prn=process_packet, store=0)
+    """Start live packet capture."""
+
+    try:
+        sniff(
+            prn=process_packet,
+            store=False,
+        )
+
+    except PermissionError:
+        add_alert(
+            "Packet capture permission denied.",
+            "HIGH",
+        )
+
+    except Exception as error:
+        add_alert(
+            f"Capture error: {error}",
+            "HIGH",
+        )
 
 
-def save_session_data(base_filename):
-    """Exports session history to CSV and writes raw packet captures to PCAP for Wireshark."""
+# ============================================================
+# SESSION EXPORT
+# ============================================================
+
+def save_session(base_filename):
+    """Save captured traffic as CSV and PCAP."""
+
     with lock:
-        if not all_captured_packets:
-            return False, "No packets captured in this session."
+
+        if not traffic_records:
+            return False, "No packets were captured."
+
+        csv_path = f"{base_filename}.csv"
+        pcap_path = f"{base_filename}.pcap"
 
         try:
-            csv_file = f"{base_filename}.csv"
-            pcap_file = f"{base_filename}.pcap"
 
-            # 1. Export CSV Log
-            fieldnames = [
+            fields = [
                 "Date",
                 "Time",
                 "Source IP",
@@ -222,271 +483,512 @@ def save_session_data(base_filename):
                 "Service",
                 "Size (Bytes)",
             ]
-            with open(csv_file, mode="w", newline="") as file:
-                writer = csv.DictWriter(file, fieldnames=fieldnames)
+
+            with open(
+                csv_path,
+                "w",
+                newline="",
+                encoding="utf-8",
+            ) as file:
+
+                writer = csv.DictWriter(
+                    file,
+                    fieldnames=fields,
+                )
+
                 writer.writeheader()
-                writer.writerows(all_captured_packets)
+                writer.writerows(traffic_records)
 
-            # 2. Export Wireshark PCAP File
-            wrpcap(pcap_file, all_raw_packets)
+            wrpcap(
+                pcap_path,
+                raw_packets,
+            )
 
-            return True, f"Saved CSV ('{csv_file}') and PCAP ('{pcap_file}')"
-        except Exception as e:
-            return False, str(e)
+            return True, (
+                f"CSV: {csv_path} | "
+                f"PCAP: {pcap_path}"
+            )
+
+        except Exception as error:
+
+            return False, str(error)
 
 
-def check_keyboard_input():
-    """Non-blocking keyboard reader to capture user key presses interactively."""
+# ============================================================
+# KEYBOARD INPUT
+# ============================================================
+
+def get_key():
+    """Read a key without blocking the dashboard."""
+
     if sys.platform == "win32":
+
         import msvcrt
 
         if msvcrt.kbhit():
-            return msvcrt.getch().decode("utf-8", errors="ignore").lower()
+            return msvcrt.getch().decode(
+                "utf-8",
+                errors="ignore",
+            ).lower()
+
     else:
+
         if sys.stdin.isatty():
-            dr, _, _ = select.select([sys.stdin], [], [], 0)
-            if dr:
+
+            ready, _, _ = select.select(
+                [sys.stdin],
+                [],
+                [],
+                0,
+            )
+
+            if ready:
                 return sys.stdin.read(1).lower()
+
     return None
 
 
-def generate_layout(console: Console) -> Layout:
-    """Builds and updates the Rich UI layout structure with current telemetry data."""
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+def build_dashboard(console):
+    """Build the live Rich terminal interface."""
+
     layout = Layout()
 
-    term_height = console.height
-    usable_height = term_height - 3
+    terminal_height = console.height
+    usable_height = max(15, terminal_height - 3)
 
-    top_panel_height = int(usable_height * (5 / 8))
-    bottom_panel_height = usable_height - top_panel_height
+    top_rows = max(
+        5,
+        int(usable_height * 0.55),
+    )
 
-    top_max_rows = max(5, top_panel_height - 3)
-    bottom_max_rows = max(3, bottom_panel_height - 3)
+    bottom_rows = max(
+        5,
+        usable_height - top_rows,
+    )
 
     layout.split_column(
-        Layout(name="top", ratio=5),
-        Layout(name="bottom", ratio=3),
+        Layout(name="packets", size=top_rows),
+        Layout(name="bottom", size=bottom_rows),
         Layout(name="footer", size=3),
     )
+
     layout["bottom"].split_row(
-        Layout(name="top_talkers", ratio=3),
+        Layout(name="hosts", ratio=3),
         Layout(name="telemetry", ratio=2),
     )
 
     with lock:
-        mb_transferred = total_bytes / (1024 * 1024)
 
-        # 1. TOP PANEL: Live Packet Stream Table
-        top_table = Table(expand=True, show_edge=False)
-        top_table.add_column("Date", style="dim green", width=11)
-        top_table.add_column("Time", style="dim green", width=9)
-        top_table.add_column("Source IP", style="green")
-        top_table.add_column("Destination IP", style="green")
-        top_table.add_column("Protocol", style="bold green", width=9)
-        top_table.add_column("Service / Application", style="bright_green")
-        top_table.add_column("Size", style="dim green", justify="right", width=9)
+        # ====================================================
+        # TOP: LIVE PACKETS
+        # ====================================================
 
-        visible_packets = packet_buffer[-top_max_rows:]
-        for pkt in visible_packets:
-            top_table.add_row(pkt[0], pkt[1], pkt[2], pkt[3], pkt[4], pkt[5], pkt[6])
-
-        top_panel = Panel(
-            top_table,
-            title=(
-                f"Live Packet Stream | Packets: {total_packets} | Data:"
-                f" {mb_transferred:.2f} MB"
-            ),
-            border_style="green",
+        packet_table = Table(
+            expand=True,
+            show_edge=False,
         )
-        layout["top"].update(top_panel)
 
-        # 2. BOTTOM LEFT PANEL: Top Network Generators
-        talkers_table = Table(expand=True, show_edge=False)
-        talkers_table.add_column("Active IP Address", style="bright_green")
-        talkers_table.add_column("Packets", style="green", justify="right")
-        talkers_table.add_column("Data", style="dim green", justify="right")
-        talkers_table.add_column("Volume Bar", style="bright_green")
+        packet_table.add_column(
+            "Time",
+            width=9,
+        )
 
-        max_bytes = max(ip_bytes.values()) if ip_bytes else 1
+        packet_table.add_column(
+            "Source",
+        )
 
-        for ip, p_count in ip_packets.most_common(bottom_max_rows):
-            b_count = ip_bytes[ip]
-            data_str = (
-                f"{b_count / 1024:.1f} KB"
-                if b_count < 1048576
-                else f"{b_count / 1048576:.2f} MB"
+        packet_table.add_column(
+            "Destination",
+        )
+
+        packet_table.add_column(
+            "Protocol",
+            width=9,
+        )
+
+        packet_table.add_column(
+            "Service",
+        )
+
+        packet_table.add_column(
+            "Size",
+            justify="right",
+            width=10,
+        )
+
+        visible = packet_buffer[-max(5, top_rows - 4):]
+
+        for packet in visible:
+
+            packet_table.add_row(
+                packet[1],
+                packet[2],
+                packet[3],
+                packet[4],
+                packet[5],
+                packet[6],
             )
 
-            bar_length = 10
-            filled = int((b_count / max_bytes) * bar_length)
-            bar = "█" * filled + "░" * (bar_length - filled)
-
-            talkers_table.add_row(ip, str(p_count), data_str, f"[{bar}]")
-
-        talkers_panel = Panel(
-            talkers_table, title="Top Network Generators", border_style="green"
+        packet_panel = Panel(
+            packet_table,
+            title=(
+                f" | LIVE TRAFFIC  "
+                f"| Packets: {total_packets:,} "
+                f"| Data: {format_bytes(total_bytes)}"
+            ),
+            border_style="cyan",
         )
-        layout["top_talkers"].update(talkers_panel)
 
-        # 3. BOTTOM RIGHT PANEL: Telemetry & NIDS Watchlist
-        avg_pkt_size = (total_bytes // total_packets) if total_packets > 0 else 0
-        tcp_pct = (
-            int((protocol_counts["TCP"] / total_packets) * 100)
-            if total_packets > 0
+        layout["packets"].update(packet_panel)
+
+        # ====================================================
+        # BOTTOM LEFT: TOP HOSTS
+        # ====================================================
+
+        host_table = Table(
+            expand=True,
+            show_edge=False,
+        )
+
+        host_table.add_column(
+            "Host",
+        )
+
+        host_table.add_column(
+            "Packets",
+            justify="right",
+        )
+
+        host_table.add_column(
+            "Traffic",
+            justify="right",
+        )
+
+        host_table.add_column(
+            "Activity",
+        )
+
+        max_host_bytes = (
+            max(ip_byte_counts.values())
+            if ip_byte_counts
+            else 1
+        )
+
+        for ip, count in ip_packet_counts.most_common(
+            max(3, bottom_rows - 5)
+        ):
+
+            byte_count = ip_byte_counts[ip]
+
+            filled = int(
+                (byte_count / max_host_bytes) * 10
+            )
+
+            bar = (
+                "█" * filled
+                + "░" * (10 - filled)
+            )
+
+            host_table.add_row(
+                ip,
+                str(count),
+                format_bytes(byte_count),
+                bar,
+            )
+
+        host_panel = Panel(
+            host_table,
+            title="Top Network Hosts",
+            border_style="cyan",
+        )
+
+        layout["hosts"].update(host_panel)
+
+        # ====================================================
+        # BOTTOM RIGHT: TELEMETRY
+        # ====================================================
+
+        avg_packet_size = (
+            total_bytes // total_packets
+            if total_packets
             else 0
         )
-        udp_pct = (
-            int((protocol_counts["UDP"] / total_packets) * 100)
-            if total_packets > 0
-            else 0
-        )
-        icmp_pct = (
-            int((protocol_counts["ICMP"] / total_packets) * 100)
-            if total_packets > 0
+
+        tcp_percent = (
+            int(
+                protocol_counts["TCP"]
+                / total_packets
+                * 100
+            )
+            if total_packets
             else 0
         )
 
-        telemetry_text = (
-            f"[bold green]Velocity:[/bold green] {current_packet_rate} pkts/sec\n"
+        udp_percent = (
+            int(
+                protocol_counts["UDP"]
+                / total_packets
+                * 100
+            )
+            if total_packets
+            else 0
         )
-        telemetry_text += (
-            "[bold green]Status:[/bold green] [bold black on green] ACTIVE CAPTURE"
-            " [/bold black on green]\n"
-        )
-        telemetry_text += (
-            f"[bold green]Unique Hosts Detected:[/bold green] {len(unique_hosts)}\n"
-        )
-        telemetry_text += (
-            f"[bold green]Avg Packet Size:[/bold green] {avg_pkt_size} Bytes\n"
-        )
-        telemetry_text += (
-            f"[bold green]Protocol Mix:[/bold green] TCP: {tcp_pct}% | UDP:"
-            f" {udp_pct}% | ICMP: {icmp_pct}%\n"
-        )
-        telemetry_text += (
-            f"[bold green]System Alert:[/bold green] [dim green]{status_message}[/dim"
-            " green]\n\n"
-        )
-        telemetry_text += "[bold green]NIDS Threat Watchlist:[/bold green]\n"
 
-        if flagged_traffic:
-            for alert in flagged_traffic[-3:]:
-                telemetry_text += f"[dim green]• {alert}[/dim green]\n"
+        icmp_percent = (
+            int(
+                protocol_counts["ICMP"]
+                / total_packets
+                * 100
+            )
+            if total_packets
+            else 0
+        )
+
+        telemetry = Table.grid(
+            expand=True,
+        )
+
+        telemetry.add_column()
+
+        telemetry.add_row(
+            f"[bold cyan]Status:[/bold cyan] "
+            f"[bold green]● CAPTURING[/bold green]"
+        )
+
+        telemetry.add_row(
+            f"[bold cyan]Rate:[/bold cyan] "
+            f"{packets_per_second} packets/sec"
+        )
+
+        telemetry.add_row(
+            f"[bold cyan]Hosts:[/bold cyan] "
+            f"{len(unique_hosts)}"
+        )
+
+        telemetry.add_row(
+            f"[bold cyan]Avg Packet:[/bold cyan] "
+            f"{avg_packet_size} B"
+        )
+
+        telemetry.add_row(
+            f"[bold cyan]TCP:[/bold cyan] {tcp_percent}%  "
+            f"[bold cyan]UDP:[/bold cyan] {udp_percent}%  "
+            f"[bold cyan]ICMP:[/bold cyan] {icmp_percent}%"
+        )
+
+        telemetry.add_row("")
+
+        telemetry.add_row(
+            "[bold cyan]Security Events[/bold cyan]"
+        )
+
+        if security_alerts:
+
+            for alert in security_alerts[-3:]:
+
+                severity = alert["severity"]
+
+                if severity == "HIGH":
+                    style = "bold red"
+                elif severity == "MEDIUM":
+                    style = "bold yellow"
+                else:
+                    style = "dim"
+
+                telemetry.add_row(
+                    f"[{style}][{severity}][/{style}] "
+                    f"{alert['message']}"
+                )
+
         else:
-            telemetry_text += "[dim green]No anomalies flagged...[/dim green]\n"
+
+            telemetry.add_row(
+                "[dim]No suspicious activity detected[/dim]"
+            )
 
         telemetry_panel = Panel(
-            telemetry_text, title="Telemetry & Threat Watchlist", border_style="green"
+            telemetry,
+            title="Telemetry & Threat Watchlist",
+            border_style="cyan",
         )
-        layout["telemetry"].update(telemetry_panel)
 
-        # 4. FOOTER PANEL: Interactive Controls
-        footer_grid = Table.grid(expand=True)
-        footer_grid.add_column(justify="left")
-        footer_grid.add_column(justify="right")
-        footer_grid.add_row(
-            "[bold green]Press [bold bright_green]'q'[/bold bright_green] to stop"
-            " capture and exit system[/bold green]",
-            "[dim green]All rights reserved to Yannich Thay[/dim green]",
+        layout["telemetry"].update(
+            telemetry_panel
         )
-        layout["footer"].update(Panel(footer_grid, border_style="green"))
+
+        # ====================================================
+        # FOOTER
+        # ====================================================
+
+        footer = Table.grid(
+            expand=True,
+        )
+
+        footer.add_column(
+            justify="left"
+        )
+
+        footer.add_column(
+            justify="right"
+        )
+
+        footer.add_row(
+            "[bold cyan]q[/bold cyan] stop capture",
+            "[dim]SentinelNet | defensive monitoring[/dim]",
+        )
+
+        layout["footer"].update(
+            Panel(
+                footer,
+                border_style="cyan",
+            )
+        )
 
     return layout
 
 
-# MAIN ENTRY POINT
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
-    global TARGET_IP
-    
-    # 0. Check Root Privileges
+
+    global target_ip
+    global capture_running
+
     check_privileges()
 
     console = Console()
-    console.clear()
-    current_year = datetime.now().year
 
-    print("\n****************************************************************")
-    print(r"""
-  _  __      _                      _      _____           __  __ _             _                _                    
- | \|  | ___| |___      _____  _ __| | __ |_   _| __ __   / _|/ _(_) ___       / \   _ __   __ _| |_   _ _______ _ __ 
- |  \| |/ _ \ __\ \ /\ / / _ \| '__| |/ /   | || '__/ _`\| |_| |_| |/ __|     / _ \ | '_ \ / _` | | | | |_  / _ \ '__|
- | |\  |  __/ |_ \ V  V / (_) | |  |   <    | || | | (_| |  _|  _| | (__     / ___ \| | | | (_| | | |_| |/ /  __/ |   
- |_| \_|\___|\__| \_/\_/ \___/|_|  |_|\_\___|_||_|  \__,_|_| |_| |_|\___|___/_/   \_\_| |_|\__,_|_|\__, /___\___|_|   
-                                        |_____|                         |_____|                     |___/             
-    """)
-    print("****************************************************************")
-    print(
-        f"* Copyright © {current_year} Yannich Thay. All rights reserved.       *"
-    )
-    print(
-        "* Network Traffic Analyzer & Mini-NIDS Dashboard               *"
-    )
-    print("****************************************************************")
+    console.clear()
+
+    print()
+    print("=" * 64)
+    print("                    NETWORK TRAFFIC MONITOR")
+    print("=" * 64)
+    print()
+    print(" Live packet analysis")
+    print(" Lightweight threat detection")
+    print(" CSV + PCAP session export")
+    print()
+    print("=" * 64)
     print()
 
-    user_input = input(
-        "Please enter an IP address to monitor (or press Enter for all): "
+    target_ip = input(
+        "Monitor specific IP "
+        "(press Enter for all traffic): "
     ).strip()
-    TARGET_IP = user_input
 
-    print("\nLaunching interface... (Press 'q' inside dashboard to exit)")
-    time.sleep(1.0)
+    print()
+    print("Starting capture...")
+    print("Press 'q' inside the dashboard to stop.")
+    time.sleep(1)
+
     console.clear()
 
-    threading.Thread(target=start_sniffer, daemon=True).start()
-    threading.Thread(target=calculate_rates, daemon=True).start()
+    # Start packet capture
+    sniffer_thread = threading.Thread(
+        target=start_sniffer,
+        daemon=True,
+    )
 
-    old_settings = None
-    if sys.platform != "win32" and sys.stdin.isatty():
-        try:
-            old_settings = termios.tcgetattr(sys.stdin)
-            tty.setcbreak(sys.stdin.fileno())
-        except Exception:
-            pass
+    rate_thread = threading.Thread(
+        target=calculate_packet_rate,
+        daemon=True,
+    )
+
+    sniffer_thread.start()
+    rate_thread.start()
 
     try:
+
         with Live(
-            generate_layout(console), refresh_per_second=4, console=console
+            build_dashboard(console),
+            refresh_per_second=4,
+            console=console,
         ) as live:
-            while True:
+
+            while capture_running:
+
                 time.sleep(0.1)
-                key = check_keyboard_input()
+
+                key = get_key()
+
                 if key == "q":
+                    capture_running = False
                     break
-                live.update(generate_layout(console))
+
+                live.update(
+                    build_dashboard(console)
+                )
+
     except KeyboardInterrupt:
-        pass
+
+        capture_running = False
+
     finally:
-        if old_settings and sys.platform != "win32":
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-            except Exception:
-                pass
+
+        capture_running = False
 
         console.clear()
-        console.print("[bold green]Capture stopped.[/bold green]\n")
-
-        save_choice = (
-            input("Do you want to save session log & PCAP captures? (y/n): ")
-            .strip()
-            .lower()
-        )
-        if save_choice in ["y", "yes"]:
-            raw_filename = input("Enter file base name (e.g., session_capture): ")
-            clean_name = sanitize_filename(raw_filename)
-
-            success, message = save_session_data(clean_name)
-            if success:
-                console.print(
-                    f"\n[bold green][✓] Successfully saved: {message}[/bold green]"
-                )
-            else:
-                console.print(f"\n[bold red][!] Save failed: {message}[/bold red]")
-        else:
-            console.print("\n[dim green]Session ended without saving.[/dim green]")
 
         console.print(
-            "[bold green][✓] Session ended cleanly. All captures stopped.[/bold green]"
+            "\n[bold cyan]Capture stopped.[/bold cyan]\n"
+        )
+
+        if total_packets == 0:
+
+            console.print(
+                "[yellow]No packets captured.[/yellow]"
+            )
+
+            return
+
+        save_choice = input(
+            "Save session as CSV + PCAP? (y/n): "
+        ).strip().lower()
+
+        if save_choice in ("y", "yes"):
+
+            filename = input(
+                "Enter a base filename "
+                "(e.g. office_scan): "
+            )
+
+            filename = sanitize_filename(
+                filename
+            )
+
+            success, message = save_session(
+                filename
+            )
+
+            if success:
+
+                console.print(
+                    f"\n[bold green]✓ Saved:[/bold green] "
+                    f"{message}"
+                )
+
+            else:
+
+                console.print(
+                    f"\n[bold red]✗ Export failed:[/bold red] "
+                    f"{message}"
+                )
+
+        else:
+
+            console.print(
+                "[dim]Session data was not exported.[/dim]"
+            )
+
+        console.print(
+            "\n[bold green]✓ SentinelNet session ended.[/bold green]"
         )
 
 
